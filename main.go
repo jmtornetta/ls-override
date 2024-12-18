@@ -94,28 +94,36 @@ func main() {
 	termWidth, err := getTerminalWidth()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Error getting terminal width:", err)
-		termWidth = 80 // fallback if tput fails
+		termWidth = 80 // Fallback to 80 if terminal width cannot be determined
 	}
 
-	// Determine max length for proper spacing
-	maxLen := 0
+	// Define padding between columns
+	padding := 2
+
+	// Calculate number of columns
+	numCols := 1
+	colWidth := 0
 	for _, f := range files {
-		length := len(stripANSI(f))
-		if length > maxLen {
-			maxLen = length
+		displayLen := len(stripANSI(f))
+		if displayLen > colWidth {
+			colWidth = displayLen
 		}
 	}
-	if maxLen == 0 {
-		// Nothing to print
-		return
+	if colWidth > 0 {
+		numCols = termWidth / (colWidth + padding)
+		if numCols < 1 {
+			numCols = 1
+		}
 	}
 
-	// Add some padding between columns
-	padding := 2
-	colWidth := maxLen + padding
-	numCols := termWidth / colWidth
-	if numCols == 0 {
-		numCols = 1
+	// Calculate max width for each column
+	colWidths := make([]int, numCols)
+	for i := 0; i < len(files); i++ {
+		col := i % numCols
+		displayLen := len(stripANSI(files[i]))
+		if displayLen > colWidths[col] {
+			colWidths[col] = displayLen
+		}
 	}
 
 	// Print files in a grid
@@ -130,7 +138,7 @@ func main() {
 			displayLen := len(stripANSI(f))
 			buffer.WriteString(f)
 			if j < len(rowFiles)-1 {
-				spaces := colWidth - displayLen
+				spaces := colWidths[j] - displayLen + padding
 				if spaces < 1 {
 					spaces = 1
 				}
