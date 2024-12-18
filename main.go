@@ -18,13 +18,13 @@ var colors = map[string]string{
 	"green":        "\033[32m",
 	"cyan":         "\033[36m",
 	"magenta":      "\033[35m",
-	"fadedblue":    "\033[38;2;70;70;150m",   // More faded blue
-	"fadedgreen":   "\033[38;2;70;150;70m",   // More faded green
-	"fadedcyan":    "\033[38;2;70;150;150m",  // More faded cyan
-	"fadedmagenta": "\033[38;2;150;70;150m",  // More faded magenta
-	"fadedyellow":  "\033[38;2;150;150;70m",  // More faded yellow
-	"fadedred":     "\033[38;2;150;70;70m",   // More faded red
-	"fadedgray":    "\033[38;2;100;100;100m", // More faded gray
+	"fadedblue":    "\033[38;2;70;70;150m",
+	"fadedgreen":   "\033[38;2;70;150;70m",
+	"fadedcyan":    "\033[38;2;70;150;150m",
+	"fadedmagenta": "\033[38;2;150;70;150m",
+	"fadedyellow":  "\033[38;2;150;150;70m",
+	"fadedred":     "\033[38;2;150;70;70m",
+	"fadedgray":    "\033[38;2;100;100;100m",
 }
 
 var nameColors = map[string]string{
@@ -41,7 +41,7 @@ func stripANSI(s string) string {
 
 func main() {
 	args := os.Args[1:]
-	cmd := exec.Command("ls", append(args, "--color=always", "-1")...)
+	cmd := exec.Command("ls", append(args, "--color=always", "-1", "-A", "-F", "--group-directories-first")...)
 	cmd.Stderr = os.Stderr
 	cmd.Env = os.Environ()
 
@@ -76,69 +76,110 @@ func main() {
 	for i, f := range files {
 		nameStripped := stripANSI(f)
 		if strings.HasPrefix(nameStripped, ".") {
-			// Check if it's a directory
 			info, err := os.Stat(nameStripped)
 			if err == nil && info.IsDir() {
-				// Dot directory
 				files[i] = nameColors["dotdir"] + nameStripped + "\033[0m"
 			} else {
+				// Only recolor if ls didn't color it
 				if !strings.Contains(f, "\x1b[") {
-					// Dot file with no ls color
 					files[i] = nameColors["dotfile"] + nameStripped + "\033[0m"
 				}
 			}
 		}
 	}
 
-	// Get terminal width
 	termWidth, err := getTerminalWidth()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error getting terminal width:", err)
-		termWidth = 80 // Fallback to 80 if terminal width cannot be determined
+		// If we can't determine, default to 80
+		termWidth = 80
 	}
 
-	// Define padding between columns
+	if len(files) == 0 {
+		return
+	}
+
+	// We'll try to find the optimal number of columns.
+	// Start from the maximum possible columns and go down until we find a fit.
+	// Maximum possible columns can't be more than number of files.
+	// Also can't be more than termWidth/2 just as a heuristic to avoid silly loops.
+	maxPossibleCols := len(files)
+	if maxPossibleCols > termWidth {
+		maxPossibleCols = termWidth
+	}
+	if maxPossibleCols < 1 {
+		maxPossibleCols = 1
+	}
+
 	padding := 2
 
-	// Calculate number of columns
-	numCols := 1
-	colWidth := 0
-	for _, f := range files {
-		displayLen := len(stripANSI(f))
-		if displayLen > colWidth {
-			colWidth = displayLen
+	bestCols := 1
+
+	// Try from maxPossibleCols down to 1
+	for tryCols := maxPossibleCols; tryCols > 0; tryCols-- {
+		rows := (len(files) + tryCols - 1) / tryCols
+
+		// Compute column widths for this layout
+		colWidths := make([]int, tryCols)
+		totalWidth := 0
+		for col := 0; col < tryCols; col++ {
+			maxW := 0
+			for row := 0; row < rows; row++ {
+				index := col*rows + row
+				if index >= len(files) {
+					break
+				}
+				displayLen := len(stripANSI(files[index]))
+				if displayLen > maxW {
+					maxW = displayLen
+				}
+			}
+			colWidths[col] = maxW
 		}
-	}
-	if colWidth > 0 {
-		numCols = termWidth / (colWidth + padding)
-		if numCols < 1 {
-			numCols = 1
+
+		for i, w := range colWidths {
+			totalWidth += w
+			if i < tryCols-1 {
+				totalWidth += padding
+			}
+		}
+
+		if totalWidth <= termWidth {
+			// This fits, record it and break (since we are going top-down from largest cols)
+			bestCols = tryCols
+			break
 		}
 	}
 
-	// Calculate max width for each column
-	colWidths := make([]int, numCols)
-	for i := 0; i < len(files); i++ {
-		col := i % numCols
-		displayLen := len(stripANSI(files[i]))
-		if displayLen > colWidths[col] {
-			colWidths[col] = displayLen
+	// Now print using bestCols in vertical layout
+	rows := (len(files) + bestCols - 1) / bestCols
+	colWidths := make([]int, bestCols)
+	for col := 0; col < bestCols; col++ {
+		maxW := 0
+		for row := 0; row < rows; row++ {
+			index := col*rows + row
+			if index >= len(files) {
+				break
+			}
+			displayLen := len(stripANSI(files[index]))
+			if displayLen > maxW {
+				maxW = displayLen
+			}
 		}
+		colWidths[col] = maxW
 	}
 
-	// Print files in a grid
-	for i := 0; i < len(files); i += numCols {
-		end := i + numCols
-		if end > len(files) {
-			end = len(files)
-		}
-		rowFiles := files[i:end]
+	for row := 0; row < rows; row++ {
 		var buffer bytes.Buffer
-		for j, f := range rowFiles {
+		for col := 0; col < bestCols; col++ {
+			index := col*rows + row
+			if index >= len(files) {
+				break
+			}
+			f := files[index]
 			displayLen := len(stripANSI(f))
 			buffer.WriteString(f)
-			if j < len(rowFiles)-1 {
-				spaces := colWidths[j] - displayLen + padding
+			if col < bestCols-1 {
+				spaces := colWidths[col] - displayLen + padding
 				if spaces < 1 {
 					spaces = 1
 				}
